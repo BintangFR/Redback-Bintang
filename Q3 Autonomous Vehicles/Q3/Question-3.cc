@@ -21,6 +21,8 @@ struct Point {
 struct MidpointCandidate {
 	Point p;
 	double score = 0.0;
+	int coneA = -1;
+	int coneB = -1;
 };
 
 static double sqr(double v) {
@@ -238,11 +240,105 @@ static std::vector<MidpointCandidate> generateMidpointCandidates(const std::vect
 
 			const double score = parallel + perpI + perpJ - 0.025 * d;
 			const Point m = (cones[i] + cones[j]) * 0.5;
-			mids.push_back({m, score});
+			mids.push_back({m, score, i, j});
 		}
 	}
 
 	return mids;
+}
+
+static Point waypointTangent(const std::vector<Point>& path, size_t idx) {
+	const size_t n = path.size();
+	if (n < 3) {
+		return {1.0, 0.0};
+	}
+	const Point& prev = path[(idx + n - 1) % n];
+	const Point& next = path[(idx + 1) % n];
+	return normalize(next - prev);
+}
+
+static std::vector<Point> refineWaypointsTowardMidline(
+	const std::vector<Point>& waypoints,
+	const std::vector<MidpointCandidate>& mids,
+	const std::vector<Point>& cones,
+	double searchRadius,
+	double blend
+) {
+	if (waypoints.empty() || mids.empty()) {
+		return waypoints;
+	}
+
+	std::vector<Point> refined = waypoints;
+	for (int pass = 0; pass < 3; ++pass) {
+		std::vector<Point> next = refined;
+		for (size_t wi = 0; wi < refined.size(); ++wi) {
+			const Point& w = refined[wi];
+			const Point tangent = waypointTangent(refined, wi);
+
+			int bestIdx = -1;
+			double bestCost = std::numeric_limits<double>::max();
+
+			for (size_t mi = 0; mi < mids.size(); ++mi) {
+				const auto& m = mids[mi];
+				const double dMid = dist(w, m.p);
+				if (dMid > searchRadius) {
+					continue;
+				}
+
+				if (m.coneA < 0 || m.coneB < 0 || m.coneA >= static_cast<int>(cones.size()) || m.coneB >= static_cast<int>(cones.size())) {
+					continue;
+				}
+
+				const Point across = normalize(cones[m.coneB] - cones[m.coneA]);
+				const double tangentAcross = std::abs(dot(tangent, across));
+
+				const Point va = cones[m.coneA] - w;
+				const Point vb = cones[m.coneB] - w;
+				const double sideA = cross(tangent, va);
+				const double sideB = cross(tangent, vb);
+				if (sideA * sideB >= 0.0) {
+					continue;
+				}
+
+				const double da = norm(va);
+				const double db = norm(vb);
+				const double symmetry = std::abs(da - db) / std::max(1e-6, da + db);
+
+				// Lower cost is better: near midpoint, across-track pair perpendicular to tangent,
+				// and waypoint roughly centered between paired cones.
+				double cost = 0.95 * dMid + 1.5 * tangentAcross + 1.2 * symmetry - 0.12 * m.score;
+				if (cost < bestCost) {
+					bestCost = cost;
+					bestIdx = static_cast<int>(mi);
+				}
+			}
+
+			if (bestIdx >= 0) {
+				const Point target = mids[bestIdx].p;
+				Point moved = w * (1.0 - blend) + target * blend;
+
+				// Prevent sudden jumps to wrong local branches when track sections are close.
+				const Point delta = moved - w;
+				const double maxShift = 0.22;
+				const double d = norm(delta);
+				if (d > maxShift) {
+					moved = w + delta * (maxShift / d);
+				}
+				next[wi] = moved;
+			}
+		}
+
+		// Light cyclic filter for continuity after each midpoint-attraction pass.
+		const size_t n = next.size();
+		for (size_t i = 0; i < n; ++i) {
+			const Point& prev = next[(i + n - 1) % n];
+			const Point& cur = next[i];
+			const Point& nxt = next[(i + 1) % n];
+			refined[i] = prev * 0.15 + cur * 0.7 + nxt * 0.15;
+		}
+	}
+
+	return refined;
 }
 
 static std::vector<MidpointCandidate> deduplicateMidpoints(const std::vector<MidpointCandidate>& mids, double cellSize) {
@@ -651,7 +747,10 @@ int main(int argc, char** argv) {
 		auto orderedCenterline = orderCenterline(midpointCloud);
 		orderedCenterline = smoothClosedPath(orderedCenterline, 3, 0.2);
 		orderedCenterline = decimateClosedPath(orderedCenterline, 0.35);
-		const auto waypoints = resampleClosedPath(orderedCenterline, 0.5);
+		auto waypoints = resampleClosedPath(orderedCenterline, 0.5);
+		waypoints = refineWaypointsTowardMidline(waypoints, mids, cones, 2.7, 0.45);
+		waypoints = smoothClosedPath(waypoints, 2, 0.12);
+		waypoints = resampleClosedPath(waypoints, 0.5);
 
 		if (waypoints.size() < 20) {
 			std::cerr << "Generated too few waypoints.\n";
