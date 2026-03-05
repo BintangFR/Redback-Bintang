@@ -1,47 +1,33 @@
-Q2 Implementation Assumptions
+Q2 Implementation Assumptions (Per Task)
 
-1) Generator workload
-- The generator alternates between SimpleTask and ComplexTask.
-- SimpleTask inputs are deterministic positive floats.
-- ComplexTask inputs are deterministic vectors of 3 integers.
-- Source: The assignment states simulation values are user-chosen ("You are free to choose the specific values for your simulation"), so deterministic task patterns are a valid testable choice.
+Task 1: Task Representation
+- `SimpleTask` and `ComplexTask` both expose a common processed-value interface via `ITask`, so the processor can use polymorphism without type-specific branching.
+- `ITask::getProcessedValue()` returns `float` for both task types, and complex results (integer sums) are represented exactly in float for expected test ranges.
 
-2) Runtime pacing
-- A small sleep is used in each loop to avoid busy-spinning and excessive CPU use.
-- The exact generation frequency is not mandated, so a 20 ms interval is used.
-- Source (sleep/yield behavior): C++ reference for `std::this_thread::sleep_for`.
-  https://en.cppreference.com/w/cpp/thread/sleep_for
-- Source (busy wait is CPU intensive): M. Herlihy and N. Shavit, *The Art of Multiprocessor Programming*, revised 1st ed., Morgan Kaufmann, 2012 (discussion of spinning vs blocking/waiting).
+Task 2: Concurrency and Shared Queues
+- The generator alternates between `SimpleTask` and `ComplexTask` using deterministic inputs to keep behavior repeatable during testing.
+- A short sleep (`20 ms`) is used in loops to avoid busy-spinning and unnecessary CPU usage.
+- Shutdown uses a shared `std::atomic<bool>` stop flag; processor and transmitter continue draining queues after generation stops.
+- Non-blocking queue pop is used in worker loops so threads can exit cleanly once stop is requested and queues are empty.
 
-3) Graceful shutdown
-- The shutdown flag stops new generation.
-- Processor and transmitter continue draining their respective queues after shutdown until empty.
-- Non-blocking pop is used in processor/transmitter loops for graceful exit.
-- Source (atomic stop flag pattern): C++ reference for `std::atomic` and lock-free synchronization primitives.
-  https://en.cppreference.com/w/cpp/atomic/atomic
-- Source (graceful thread lifecycle and shutdown coordination): A. Williams, *C++ Concurrency in Action*, 2nd ed., Manning, 2019.
+Task 3: Data Serialization (Bitpacking)
+- `TaskType` is encoded as `00` for `SimpleTask` and `01` for `ComplexTask` in bits 7..6 of byte 0; remaining bits are padding set to 0.
+- Bytes 1..4 are packed in big-endian order for both float (`SimpleTask`) and `int32_t` (`ComplexTask`) payloads.
+- Bytes 5..7 contain the lower 24 bits of a millisecond timestamp in big-endian order.
+- For `ComplexTask`, the processed float is explicitly cast to `int32_t` at serialization time to satisfy the "float or int depending on task type" requirement.
 
-4) Type and serialization rules
-- TaskType values are encoded as:
-  - 00 for SimpleTask
-  - 01 for ComplexTask
-- Byte 0 stores TaskType in bits 7..6, remaining bits are 0.
-- Bytes 1..4 are packed big-endian for both float (SimpleTask) and int32 (ComplexTask).
-- Bytes 5..7 store the lower 24 bits of a millisecond timestamp in big-endian order.
-- Source (bit/byte ordering and network byte order convention): RFC 1700 (Assigned Numbers), section on Data Notations ("big-endian" network order).
-  https://datatracker.ietf.org/doc/html/rfc1700
-- Source (portable fixed-width integer semantics): C++ reference for `<cstdint>` fixed-width types (`int32_t`, `uint32_t`).
-  https://en.cppreference.com/w/cpp/types/integer
-- Source (float representation background): IEEE Std 754-2019, *IEEE Standard for Floating-Point Arithmetic*.
+Task 4: Unit Testing
+- `main()` is excluded when `UNIT_TEST` is defined so test code can include implementation units safely.
+- Bitpacking is tested with deterministic fixtures (fixed task values and timestamps), including exact byte-level assertions.
+- A reusable helper is assumed for packing to avoid duplicating serialization logic across tests.
 
-5) Processed value API
-- ITask::getProcessedValue() returns float for both task types.
-- For ComplexTask serialization, that processed float is cast to int32 for packing.
-- Source: The bitpacking requirements specify Bytes 1..4 hold "a float or int, depending on task type"; using a shared getter plus explicit cast at serialization preserves polymorphic processing while meeting the per-type wire format.
+Task 5: Assumptions Documentation
+- All assumptions are documented directly against the relevant task to keep traceability between implementation choices and assignment requirements.
 
-6) Testability
-- main() is excluded when UNIT_TEST is defined to allow including Question-2.cc from the test file.
-- A reusable packTask(...) helper is added to test deterministic bitpacking with fixed timestamps.
-- Source (unit test design guidance): GoogleTest Primer and advanced docs recommend isolating logic and testing deterministic units.
-  https://google.github.io/googletest/primer.html
-  https://google.github.io/googletest/advanced.html
+References
+- C++ reference for `std::this_thread::sleep_for`: https://en.cppreference.com/w/cpp/thread/sleep_for
+- C++ reference for `std::atomic`: https://en.cppreference.com/w/cpp/atomic/atomic
+- C++ fixed-width integer types (`<cstdint>`): https://en.cppreference.com/w/cpp/types/integer
+- RFC 1700 data notation (network byte order): https://datatracker.ietf.org/doc/html/rfc1700
+- IEEE Std 754-2019, *IEEE Standard for Floating-Point Arithmetic*
+- GoogleTest docs: https://google.github.io/googletest/primer.html
